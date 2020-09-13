@@ -1,103 +1,87 @@
-# Import socket module
-from socket import *
-import threading
-import sys  # In order to terminate the program
+# chat_server.py
 
-FLAG = False  # this is a flag variable for checking quit
+import sys
+import socket
+import select
 
-# function for receiving message from client
+HOST = ''
+SOCKET_LIST = []
+RECV_BUFFER = 4096
+PORT = 9009
 
+def chat_server():
 
-def recv_from_client(conn):
-    global FLAG
-    try:
-        # Receives the request message from the client
-        while True:
-            if FLAG == True:
-                break
-            message = conn.recv(1024).decode()
-            # if 'q' is received from the client the server quits
-            if message == 'q':
-                conn.send('q'.encode())
-                print('Closing connection')
-                conn.close()
-                FLAG = True
-                break
-            print('Client: ' + message)
-    except:
-        conn.close()
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.bind((HOST, PORT))
+    server_socket.listen(10)
 
+    # add server socket object to the list of readable connections
+    SOCKET_LIST.append(server_socket)
 
-# function for receiving message from client
-def send_to_client(conn):
-    global FLAG
-    try:
-        while True:
-            if FLAG == True:
-                break
-            send_msg = input('')
-            # the server can provide 'q' as an input if it wish to quit
-            if send_msg == 'q':
-                conn.send('q'.encode())
-                print('Closing connection')
-                conn.close()
-                FLAG = True
-                break
-            conn.send(send_msg.encode())
-    except:
-        conn.close()
+    print "Chat server started on port " + str(PORT)
 
+    while 1:
 
-# this is main function
-def main():
-    threads = []
-    global FLAG
+        # get the list sockets which are ready to be read through select
+        # 4th arg, time_out  = 0 : poll and never block
+        ready_to_read, ready_to_write, in_error = select.select(
+            SOCKET_LIST, [], [], 0)
 
-    # TODO (1) - define HOST name, this would be an IP address or 'localhost' (1 line)
-    HOST = 'localhost'
-    # TODO (2) - define PORT number (1 line) (Google, what should be a valid port number)
-    # make sure the ports are not used for any other application
-    serverPort = 6789
+        for sock in ready_to_read:
+            # a new connection request recieved
+            if sock == server_socket:
+                sockfd, addr = server_socket.accept()
+                SOCKET_LIST.append(sockfd)
+                print "Client (%s, %s) connected" % addr
 
-    # Create a TCP server socket
-    #(AF_INET is used for IPv4 protocols)
-    #(SOCK_STREAM is used for TCP)
-    # TODO (3) - CREATE a socket for IPv4 TCP connection (1 line)
-    serverSocket = socket(AF_INET, SOCK_STREAM)
+                broadcast(server_socket, sockfd,
+                          "[%s:%s] entered our chatting room\n" % addr)
 
-    # Bind the socket to server address and server port
-    # TODO (4) - bind the socket for HOSR and serverPort (1 line)
-    serverSocket.bind((HOST, serverPort))
+            # a message from a client, not a new connection
+            else:
+                # process data recieved from client,
+                try:
+                    # receiving data from the socket.
+                    data = sock.recv(RECV_BUFFER)
+                    if data:
+                        # there is something in the socket
+                        broadcast(server_socket, sock, "\r" +
+                                  '[' + str(sock.getpeername()) + '] ' + data)
+                    else:
+                        # remove the socket that's broken
+                        if sock in SOCKET_LIST:
+                            SOCKET_LIST.remove(sock)
 
-    # Listen to at most 1 connection at a time
-    # TODO (5) - listen and wait for request from client (1 line)
-    serverSocket.listen(1)
+                        # at this stage, no data means probably the connection has been broken
+                        broadcast(server_socket, sock,
+                                  "Client (%s, %s) is offline\n" % addr)
 
-    # Server should be up and running and listening to the incoming connections
-    print('The chat server is ready to connect to a chat client')
-    # TODO (6) - accept any connection request from a client (1 line)
-    connectionSocket, addr = serverSocket.accept()
-    print('Sever is connected with a chat client\n')
+                # exception
+                except:
+                    broadcast(server_socket, sock,
+                              "Client (%s, %s) is offline\n" % addr)
+                    continue
 
-    t_rcv = threading.Thread(target=recv_from_client, args=(connectionSocket,))
-    t_send = threading.Thread(target=send_to_client, args=(connectionSocket,))
-    # call the function to receive message server
-    # recv_from_server(clientSocket)
-    threads.append(t_rcv)
-    threads.append(t_send)
-    t_rcv.start()
-    t_send.start()
+    server_socket.close()
 
-    t_rcv.join()
-    t_send.join()
-
-    # closing serverScoket before exiting
-    print('EXITING')
-    serverSocket.close()
-    # Terminate the program after sending the corresponding data
-    sys.exit()
+# broadcast chat messages to all connected clients
 
 
-# This is where the program starts
-if __name__ == '__main__':
-    main()
+def broadcast(server_socket, sock, message):
+    for socket in SOCKET_LIST:
+        # send the message only to peer
+        if socket != server_socket and socket != sock:
+            try:
+                socket.send(message)
+            except:
+                # broken socket connection
+                socket.close()
+                # broken socket, remove it
+                if socket in SOCKET_LIST:
+                    SOCKET_LIST.remove(socket)
+
+
+if __name__ == "__main__":
+
+    sys.exit(chat_server())
